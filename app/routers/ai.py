@@ -12,8 +12,16 @@ async def summarize_knowledge(query: str = Body(..., embed=True)):
     article = await search_servicenow_knowledge(query)
     if not article or not article.get("text"):
         raise HTTPException(status_code=404, detail="No relevant knowledge article found.")
-    prompt = f"Summarize the following ServiceNow knowledge article in 2-3 sentences. Include a link if available.\n\nArticle: {article['text']}\nLink: {article.get('link','') or 'N/A'}"
+    prompt = f"Summarize the following ServiceNow knowledge article in 2-3 sentences. Do not include any URLs or links or [https://kpmgadvisory5.service-now.com/kb_view.do?sys_kb_id=26bf9e4f8732aa50765dea483cbb359a](https://kpmgadvisory5.service-now.com/kb_view.do?sys_kb_id=26bf9e4f8732aa50765dea483cbb359a)\ in your answer.\n\nArticle: {article['text']}"
+    import re
     summary = await google_generate_content(prompt)
+    # Remove any URLs or 'Link:' lines from the summary
+    summary = re.sub(r'Link:.*', '', summary)
+    summary = re.sub(r'https?://[^\s)]+', '', summary)
+    summary = re.sub(r'\(\s*\)', '', summary)
+    summary = re.sub(r'\[\s*\]', '', summary)
+    summary = re.sub(r'\n+', '\n', summary)
+    summary = summary.strip()
     return {"summary": summary, "link": article.get("link")}
 
 @router.post("/summarize-incident", response_model=SummaryOut)
