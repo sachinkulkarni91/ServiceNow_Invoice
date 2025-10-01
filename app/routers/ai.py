@@ -12,9 +12,15 @@ async def summarize_knowledge(query: str = Body(..., embed=True)):
     article = await search_servicenow_knowledge(query)
     if not article or not article.get("text"):
         raise HTTPException(status_code=404, detail="No relevant knowledge article found.")
-    prompt = f"Summarize the following ServiceNow knowledge article in 2-3 sentences. Do not include any URLs or links or [https://kpmgadvisory5.service-now.com/kb_view.do?sys_kb_id=26bf9e4f8732aa50765dea483cbb359a](https://kpmgadvisory5.service-now.com/kb_view.do?sys_kb_id=26bf9e4f8732aa50765dea483cbb359a)\ in your answer.\n\nArticle: {article['text']}"
+    prompt = f"Summarize the following ServiceNow knowledge article in 2-3 sentences. Do not include any URLs or links or [https://kpmgadvisory5.service-now.com/kb_view.do?sys_kb_id=26bf9e4f8732aa50765dea483cbb359a](https://kpmgadvisory5.service-now.com/kb_view.do?sys_kb_id=26bf9e4f8732aa50765dea483cbb359a) in your answer.\n\nArticle: {article['text']}"
     import re
-    summary = await google_generate_content(prompt)
+    try:
+        summary = await google_generate_content(prompt)
+    except Exception as e:
+        # Fallback for Gemini 429 or other errors
+        import sys
+        print(f"[Gemini fallback in summarize_knowledge] {type(e).__name__}: {e}", file=sys.stderr)
+        summary = article['text'][:400] + ("..." if len(article['text']) > 400 else "")
     # Remove any URLs or 'Link:' lines from the summary
     summary = re.sub(r'Link:.*', '', summary)
     summary = re.sub(r'https?://[^\s)]+', '', summary)
@@ -22,7 +28,12 @@ async def summarize_knowledge(query: str = Body(..., embed=True)):
     summary = re.sub(r'\[\s*\]', '', summary)
     summary = re.sub(r'\n+', '\n', summary)
     summary = summary.strip()
-    return {"summary": summary, "link": article.get("link")}
+    # Always return the link field from the selected article (if present)
+    link = article.get("link")
+    if not link and article.get("sys_id"):
+        from app.core.config import SERVICENOW_INSTANCE_URL
+        link = f"{SERVICENOW_INSTANCE_URL}/kb_view.do?sys_kb_id={article['sys_id']}"
+    return {"summary": summary, "link": link}
 
 @router.post("/summarize-incident", response_model=SummaryOut)
 async def summarize_incident_endpoint(incident: IncidentIn):

@@ -3,6 +3,13 @@ from dotenv import load_dotenv
 load_dotenv()
 from pydantic import BaseModel
 import os
+import base64
+SERVICENOW_INSTANCE_URL = os.getenv("SERVICENOW_INSTANCE_URL", "https://your_instance.service-now.com")
+SERVICENOW_USERNAME = os.getenv("SERVICENOW_USERNAME", "your_username")
+SERVICENOW_PASSWORD = os.getenv("SERVICENOW_PASSWORD", "your_password")
+
+# Base64-encoded HTTP Basic Auth string for ServiceNow
+SERVICENOW_AUTH = base64.b64encode(f"{SERVICENOW_USERNAME}:{SERVICENOW_PASSWORD}".encode()).decode()
 
 
 class Settings(BaseModel):
