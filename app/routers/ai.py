@@ -1,7 +1,7 @@
 
 from ..services.servicenow_client import search_servicenow_knowledge
 from fastapi import APIRouter, HTTPException, Body
-from ..models.schemas import IncidentIn, TextOut, WorkNotesOut, IncidentSummaryOut
+from ..models.schemas import IncidentIn, TextOut, WorkNotesOut, IncidentSummaryOut, ResolutionNoteOut
 from ..services.google_client import google_generate_content
 from ..services.prompting import compose_incident_text, build_summary_prompt, build_worknotes_prompt, build_resolution_prompt
 
@@ -109,15 +109,53 @@ async def work_notes_endpoint(incident: IncidentIn):
         traceback.print_exc()
         raise HTTPException(status_code=500, detail="Internal Server Error: " + str(e))
 
-@router.post("/resolution-note", response_model=TextOut)
+@router.post("/resolution-note", response_model=ResolutionNoteOut)
 async def resolution_note_endpoint(incident: IncidentIn):
     try:
         text = compose_incident_text(incident.number, incident.short_description, incident.description, incident.latest_comments)
-        prompt = build_resolution_prompt(text)
+        prompt = (
+            f"""
+Given the following incident details, extract and return only a valid JSON object with these fields:
+- root_cause: the underlying cause of the issue
+- fix_applied: the fix or solution implemented
+- validation: how the fix was validated
+- preventive_action: steps taken to prevent recurrence
+Format: {{\n  \"root_cause\": string, \"fix_applied\": string, \"validation\": string, \"preventive_action\": string\n}}
+
+Incident details:\n{text}
+"""
+        )
         out = await google_generate_content(prompt)
-        if not out:
+        import json, re
+        try:
+            parsed = json.loads(out)
+            root_cause = parsed.get("root_cause", "")
+            fix_applied = parsed.get("fix_applied", "")
+            validation = parsed.get("validation", "")
+            preventive_action = parsed.get("preventive_action", "")
+        except Exception:
+            # Fallback: try to extract with regex or return empty fields
+            root_cause = fix_applied = validation = preventive_action = ""
+            match = re.search(r'root[_ ]cause[:\-]?\s*(.+?)(?:\n|$)', out, re.IGNORECASE)
+            if match:
+                root_cause = match.group(1).strip()
+            match = re.search(r'fix[_ ]applied[:\-]?\s*(.+?)(?:\n|$)', out, re.IGNORECASE)
+            if match:
+                fix_applied = match.group(1).strip()
+            match = re.search(r'validation[:\-]?\s*(.+?)(?:\n|$)', out, re.IGNORECASE)
+            if match:
+                validation = match.group(1).strip()
+            match = re.search(r'preventive[_ ]action[:\-]?\s*(.+?)(?:\n|$)', out, re.IGNORECASE)
+            if match:
+                preventive_action = match.group(1).strip()
+        if not (root_cause or fix_applied or validation or preventive_action):
             raise HTTPException(status_code=502, detail="Failed to generate resolution note")
-        return TextOut(text=out)
+        return {
+            "root_cause": root_cause,
+            "fix_applied": fix_applied,
+            "validation": validation,
+            "preventive_action": preventive_action
+        }
     except Exception as e:
         import traceback
         print(f"[EXCEPTION] {e}")
