@@ -7,9 +7,15 @@ class IncidentIn(BaseModel):
     description: Optional[str] = None
     latest_comments: List[str] = Field(default_factory=list)
 
-class SummaryOut(BaseModel):
-    summary: str
-    key_facts: List[str] = Field(default_factory=list)
+
+class IncidentSummaryOut(BaseModel):
+    issue: str
+    actions_taken: List[str]
+
+
+class WorkNotesOut(BaseModel):
+    issue: str
+    actions_taken: List[str]
 
 class TextOut(BaseModel):
     text: str

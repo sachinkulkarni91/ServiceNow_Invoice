@@ -1,7 +1,7 @@
 
 from ..services.servicenow_client import search_servicenow_knowledge
 from fastapi import APIRouter, HTTPException, Body
-from ..models.schemas import IncidentIn, SummaryOut, TextOut
+from ..models.schemas import IncidentIn, TextOut, WorkNotesOut, IncidentSummaryOut
 from ..services.google_client import google_generate_content
 from ..services.prompting import compose_incident_text, build_summary_prompt, build_worknotes_prompt, build_resolution_prompt
 
@@ -35,32 +35,57 @@ async def summarize_knowledge(query: str = Body(..., embed=True)):
         link = f"{SERVICENOW_INSTANCE_URL}/kb_view.do?sys_kb_id={article['sys_id']}"
     return {"summary": summary, "link": link}
 
-@router.post("/summarize-incident", response_model=SummaryOut)
+@router.post("/summarize-incident", response_model=IncidentSummaryOut)
 async def summarize_incident_endpoint(incident: IncidentIn):
     try:
         text = compose_incident_text(incident.number, incident.short_description, incident.description, incident.latest_comments)
-        prompt = build_summary_prompt(text)
+        # Explicit prompt for structured JSON output
+        prompt = (
+            f"""
+Given the following incident details, extract:
+- issue: a concise description of the main problem only (do not include actions or resolutions)
+- actions_taken: a list of actions or steps performed to address the issue (as a JSON array of strings)
+Return only a valid JSON object with these two fields: {{\n  \"issue\": string, \"actions_taken\": [string, ...]\n}}
+
+Incident details:\n{text}
+"""
+        )
         result = await google_generate_content(prompt)
-        # Try to extract summary and key_facts from result (if JSON-like)
-        import json
-        summary = ""
-        key_facts = []
+        import json, re
+        issue = ""
+        actions_taken = []
         try:
             parsed = json.loads(result)
-            summary = parsed.get("summary", "")
-            key_facts = parsed.get("key_facts", [])
+            # Use only the short_description or description for issue
+            issue = incident.short_description or incident.description or parsed.get("issue", "")
+            actions_taken = parsed.get("actions_taken", [])
         except Exception:
-            summary = result
-        if not summary:
+            # Fallback: try to extract actions as bullet points, filter out number/short_description/comments
+            issue = incident.short_description or incident.description or ""
+            # Try to extract actions as bullet points
+            actions = re.findall(r'\*\s*(.+)', result)
+            if not actions:
+                # Try splitting by newlines or dashes
+                actions = [line.strip('- ').strip() for line in result.split('\n') if line.strip().startswith('-') or line.strip().startswith('*')]
+            # Remove lines that repeat number, short_description, or comments
+            filter_phrases = [
+                f"Number: {incident.number}" if incident.number else None,
+                f"Short description: {incident.short_description}" if incident.short_description else None,
+                f"Description: {incident.description}" if incident.description else None,
+                "Latest comments:",
+            ]
+            filter_phrases = [p for p in filter_phrases if p]
+            actions_taken = [a for a in actions if not any(p in a for p in filter_phrases)]
+        if not issue:
             raise HTTPException(status_code=502, detail="Failed to generate summary")
-        return SummaryOut(summary=summary, key_facts=key_facts)
+        return {"issue": issue, "actions_taken": actions_taken}
     except Exception as e:
         import traceback
         print(f"[EXCEPTION] {e}")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail="Internal Server Error: " + str(e))
 
-@router.post("/work-notes", response_model=TextOut)
+@router.post("/work-notes", response_model=WorkNotesOut)
 async def work_notes_endpoint(incident: IncidentIn):
     try:
         text = compose_incident_text(incident.number, incident.short_description, incident.description, incident.latest_comments)
@@ -68,7 +93,16 @@ async def work_notes_endpoint(incident: IncidentIn):
         out = await google_generate_content(prompt)
         if not out:
             raise HTTPException(status_code=502, detail="Failed to generate work notes")
-        return TextOut(text=out)
+        # Split actions_taken into a list by bullet points or asterisks
+        import re
+        # Replace newlines with spaces for consistent splitting
+        out_clean = out.replace('\r', ' ').replace('\n', ' ')
+        # Split on '*', '-', or numbered bullets, and remove empty entries
+        steps = re.split(r'\*|\s*-\s+|\d+\.\s+', out_clean)
+        steps = [s.strip() for s in steps if s.strip()]
+        # Use short_description or description for issue
+        issue = incident.short_description or incident.description or ""
+        return {"issue": issue, "actions_taken": steps}
     except Exception as e:
         import traceback
         print(f"[EXCEPTION] {e}")
